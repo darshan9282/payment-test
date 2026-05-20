@@ -1,0 +1,817 @@
+{
+  "info": {
+    "name": "Payment Gateway API",
+    "description": "Complete Postman collection for the Payment Processing System.\n\n## Setup\n1. Set `baseUrl` variable to `http://localhost:3000` (default)\n2. Run **Create Payment** first — the test script auto-saves `paymentId` for subsequent requests\n3. Use the **Webhook** folder to simulate async gateway callbacks",
+    "version": "1.0.0",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string",
+      "description": "Base URL of the running server"
+    },
+    {
+      "key": "paymentId",
+      "value": "",
+      "type": "string",
+      "description": "Auto-populated after Create Payment"
+    },
+    {
+      "key": "idempotencyKey",
+      "value": "",
+      "type": "string",
+      "description": "Auto-generated UUID before Create Payment"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Returns server status, circuit breaker state, and queue size."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": \"ok\",\n  \"circuitBreaker\": {\n    \"state\": \"CLOSED\",\n    \"failureCount\": 0,\n    \"lastFailureTime\": 0\n  },\n  \"queue\": { \"size\": 0 },\n  \"timestamp\": \"2026-05-20T10:00:00.000Z\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has circuit breaker stats', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.circuitBreaker).to.have.property('state');",
+                  "  pm.expect(body.status).to.eql('ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Payments",
+      "item": [
+        {
+          "name": "Create Payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}",
+                "description": "Auto-generated UUID via pre-request script"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 99.99,\n  \"currency\": \"USD\",\n  \"customerId\": \"cust_abc123\",\n  \"description\": \"Premium subscription\",\n  \"metadata\": {\n    \"orderId\": \"ord_789\",\n    \"plan\": \"premium\"\n  }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payments",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments"]
+            },
+            "description": "Initiate a new payment. Requires `Idempotency-Key` header.\n\nThe pre-request script auto-generates a UUID for the key. Sending the same request again (same key) returns the **cached response** — no duplicate payment is created."
+          },
+          "response": [
+            {
+              "name": "201 Created",
+              "status": "Created",
+              "code": 201,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"data\": {\n    \"_id\": \"6650a1b2c3d4e5f6a7b8c9d0\",\n    \"customerId\": \"cust_abc123\",\n    \"amount\": 99.99,\n    \"currency\": \"USD\",\n    \"description\": \"Premium subscription\",\n    \"status\": \"PENDING\",\n    \"retryCount\": 0,\n    \"maxRetries\": 3,\n    \"webhookReceived\": false,\n    \"createdAt\": \"2026-05-20T10:00:00.000Z\",\n    \"updatedAt\": \"2026-05-20T10:00:00.000Z\"\n  }\n}"
+            },
+            {
+              "name": "400 Missing Idempotency-Key",
+              "status": "Bad Request",
+              "code": 400,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"error\": \"Idempotency-Key header is required\"\n}"
+            },
+            {
+              "name": "400 Invalid Amount",
+              "status": "Bad Request",
+              "code": 400,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"error\": \"amount must be a positive number\"\n}"
+            },
+            {
+              "name": "429 Rate Limit Exceeded",
+              "status": "Too Many Requests",
+              "code": 429,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"error\": \"Payment creation rate limit exceeded. Max 10 payments per minute.\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Auto-generate a unique idempotency key",
+                  "const uuid = require('uuid');",
+                  "pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('Payment in PENDING state', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.data.status).to.eql('PENDING');",
+                  "  pm.expect(body.data.retryCount).to.eql(0);",
+                  "});",
+                  "// Save paymentId for later requests",
+                  "const body = pm.response.json();",
+                  "if (body.data && body.data._id) {",
+                  "  pm.collectionVariables.set('paymentId', body.data._id);",
+                  "  console.log('Saved paymentId:', body.data._id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Payment — Idempotency Replay",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}",
+                "description": "Same key as the previous Create Payment — returns cached response"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 99.99,\n  \"currency\": \"USD\",\n  \"customerId\": \"cust_abc123\",\n  \"description\": \"Premium subscription\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payments",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments"]
+            },
+            "description": "Sends the exact same request with the same `Idempotency-Key`.\n\nExpected: returns the **original 201 response** with the same payment — no new payment is created in the database."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201 (cached response)', () => pm.response.to.have.status(201));",
+                  "pm.test('Same paymentId returned (no duplicate)', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.data._id).to.eql(pm.collectionVariables.get('paymentId'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Payment by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments", "{{paymentId}}"]
+            },
+            "description": "Fetch a single payment by its MongoDB ObjectId.\n\nPoll this endpoint after creating a payment to observe the state machine: `PENDING → PROCESSING → SUCCESS / FAILED`."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"data\": {\n    \"_id\": \"6650a1b2c3d4e5f6a7b8c9d0\",\n    \"customerId\": \"cust_abc123\",\n    \"amount\": 99.99,\n    \"currency\": \"USD\",\n    \"status\": \"SUCCESS\",\n    \"retryCount\": 0,\n    \"transactionId\": \"txn_4f3e2d1c0b9a\",\n    \"processedAt\": \"2026-05-20T10:00:02.341Z\",\n    \"webhookReceived\": false,\n    \"createdAt\": \"2026-05-20T10:00:00.000Z\",\n    \"updatedAt\": \"2026-05-20T10:00:02.341Z\"\n  }\n}"
+            },
+            {
+              "name": "404 Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"error\": \"Payment not found\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Payment ID matches', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.data._id).to.eql(pm.collectionVariables.get('paymentId'));",
+                  "});",
+                  "pm.test('Has valid status', () => {",
+                  "  const validStatuses = ['PENDING', 'PROCESSING', 'SUCCESS', 'FAILED'];",
+                  "  pm.expect(validStatuses).to.include(pm.response.json().data.status);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Payments",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "10" },
+                { "key": "customerId", "value": "", "disabled": true, "description": "Filter by customer" },
+                { "key": "status", "value": "", "disabled": true, "description": "PENDING | PROCESSING | SUCCESS | FAILED" }
+              ]
+            },
+            "description": "List all payments with optional filters.\n\n**Query parameters:**\n- `customerId` — filter by customer\n- `status` — filter by state (`PENDING`, `PROCESSING`, `SUCCESS`, `FAILED`)\n- `page` — page number (default: 1)\n- `limit` — page size, max 100 (default: 20)"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"data\": [\n    {\n      \"_id\": \"6650a1b2c3d4e5f6a7b8c9d0\",\n      \"customerId\": \"cust_abc123\",\n      \"amount\": 99.99,\n      \"currency\": \"USD\",\n      \"status\": \"SUCCESS\",\n      \"retryCount\": 0,\n      \"createdAt\": \"2026-05-20T10:00:00.000Z\"\n    }\n  ],\n  \"meta\": {\n    \"total\": 1,\n    \"page\": 1,\n    \"limit\": 10\n  }\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has pagination meta', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.meta).to.have.all.keys('total', 'page', 'limit');",
+                  "  pm.expect(body.data).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Payments — Filter by Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments?status=FAILED",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments"],
+              "query": [
+                { "key": "status", "value": "FAILED" }
+              ]
+            },
+            "description": "List only FAILED payments — useful for finding payments eligible for manual retry."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('All results are FAILED', () => {",
+                  "  const body = pm.response.json();",
+                  "  body.data.forEach(p => pm.expect(p.status).to.eql('FAILED'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Payments — Filter by Customer",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments?customerId=cust_abc123",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments"],
+              "query": [
+                { "key": "customerId", "value": "cust_abc123" }
+              ]
+            },
+            "description": "List all payments for a specific customer."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('All results belong to customer', () => {",
+                  "  const body = pm.response.json();",
+                  "  body.data.forEach(p => pm.expect(p.customerId).to.eql('cust_abc123'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Retry Failed Payment",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}/retry",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments", "{{paymentId}}", "retry"]
+            },
+            "description": "Manually retry a payment that is in `FAILED` state.\n\nResets `retryCount` to 0 and re-queues the payment for processing.\n\n> **Note:** This endpoint returns `409 Conflict` if the payment is not in `FAILED` state."
+          },
+          "response": [
+            {
+              "name": "200 OK — Reset to PENDING",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"data\": {\n    \"_id\": \"6650a1b2c3d4e5f6a7b8c9d0\",\n    \"status\": \"PENDING\",\n    \"retryCount\": 0,\n    \"gatewayError\": null,\n    \"updatedAt\": \"2026-05-20T10:05:00.000Z\"\n  }\n}"
+            },
+            {
+              "name": "409 Not in FAILED state",
+              "status": "Conflict",
+              "code": 409,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"error\": \"Payment not found or not in FAILED state\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Accepts 200 (retried) or 409 (not in FAILED state — valid if payment already succeeded)",
+                  "pm.test('Status is 200 or 409', () => {",
+                  "  pm.expect([200, 409]).to.include(pm.response.code);",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "  pm.test('Payment reset to PENDING', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.data.status).to.eql('PENDING');",
+                  "    pm.expect(body.data.retryCount).to.eql(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Webhooks",
+      "item": [
+        {
+          "name": "Webhook — Payment SUCCESS",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"SUCCESS\",\n  \"transactionId\": \"txn_gateway_abc123\",\n  \"timestamp\": \"2026-05-20T10:00:05.000Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}/webhook",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments", "{{paymentId}}", "webhook"]
+            },
+            "description": "Simulates an asynchronous SUCCESS callback from the external payment gateway.\n\nValid from `PENDING` or `PROCESSING` states. Stores `transactionId` and `processedAt` timestamp."
+          },
+          "response": [
+            {
+              "name": "200 OK — Accepted",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"received\": true,\n  \"accepted\": true\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Webhook received', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.received).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Webhook — Payment FAILED",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"FAILED\",\n  \"timestamp\": \"2026-05-20T10:00:05.000Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}/webhook",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments", "{{paymentId}}", "webhook"]
+            },
+            "description": "Simulates an asynchronous FAILED callback from the external payment gateway."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Webhook received', () => {",
+                  "  pm.expect(pm.response.json().received).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Webhook — Early Callback (PENDING state)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"SUCCESS\",\n  \"transactionId\": \"txn_early_xyz\",\n  \"timestamp\": \"2026-05-20T10:00:01.000Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}/webhook",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments", "{{paymentId}}", "webhook"]
+            },
+            "description": "Tests an **early callback** — webhook arrives before the queue has changed the payment to PROCESSING.\n\nThe transition `PENDING → SUCCESS` is allowed in our state machine, so this is accepted correctly."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Early webhook accepted or already terminal', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.received).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Webhook — Duplicate Callback (idempotent)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"SUCCESS\",\n  \"transactionId\": \"txn_gateway_abc123\",\n  \"timestamp\": \"2026-05-20T10:00:05.000Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}/webhook",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments", "{{paymentId}}", "webhook"]
+            },
+            "description": "Sends the same SUCCESS webhook a **second time**.\n\nExpected: `accepted: true` with `reason: \"already in target state\"` — the duplicate is silently absorbed without changing any data."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Duplicate absorbed idempotently', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.received).to.be.true;",
+                  "  // accepted=true with reason, or accepted=false due to conflict — both valid",
+                  "  pm.expect(body).to.have.property('accepted');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Webhook — Conflicting State (rejected)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"FAILED\",\n  \"timestamp\": \"2026-05-20T10:00:10.000Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}/webhook",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments", "{{paymentId}}", "webhook"]
+            },
+            "description": "Tries to move a `SUCCESS` payment back to `FAILED` — a conflicting/invalid transition.\n\nExpected: `received: true`, `accepted: false`, `reason` explains the rejection. HTTP status is still **200** so the gateway does not retry."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200 (not retried)', () => pm.response.to.have.status(200));",
+                  "pm.test('Conflicting webhook rejected with reason', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.received).to.be.true;",
+                  "  pm.expect(body.accepted).to.be.false;",
+                  "  pm.expect(body.reason).to.include('not allowed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Webhook — Invalid Status",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"REFUNDED\",\n  \"timestamp\": \"2026-05-20T10:00:10.000Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}/webhook",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments", "{{paymentId}}", "webhook"]
+            },
+            "description": "Sends an unknown status value.\n\nExpected: `400 Bad Request` — `REFUNDED` is not a valid `PaymentStatus`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message explains invalid status', () => {",
+                  "  pm.expect(pm.response.json().error).to.include('Invalid status');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Edge Cases",
+      "item": [
+        {
+          "name": "Create Payment — Missing Idempotency-Key",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 50,\n  \"currency\": \"USD\",\n  \"customerId\": \"cust_001\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payments",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments"]
+            },
+            "description": "Sends a payment creation request **without** the `Idempotency-Key` header.\n\nExpected: `400 Bad Request`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error mentions Idempotency-Key', () => {",
+                  "  pm.expect(pm.response.json().error).to.include('Idempotency-Key');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Payment — Invalid Amount",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": -10,\n  \"currency\": \"USD\",\n  \"customerId\": \"cust_001\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payments",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments"]
+            },
+            "description": "Negative amount — expected `400 Bad Request`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error mentions amount', () => {",
+                  "  pm.expect(pm.response.json().error).to.include('amount');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Payment — Invalid Currency",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 50,\n  \"currency\": \"DOLLAR\",\n  \"customerId\": \"cust_001\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payments",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments"]
+            },
+            "description": "Currency is not a 3-letter code — expected `400 Bad Request`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error mentions currency', () => {",
+                  "  pm.expect(pm.response.json().error).to.include('currency');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Payment — Invalid ID Format",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/not-a-valid-id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments", "not-a-valid-id"]
+            },
+            "description": "Non-ObjectId string — expected `400 Bad Request`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error mentions invalid ID', () => {",
+                  "  pm.expect(pm.response.json().error).to.include('Invalid');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Payment — Not Found",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/507f1f77bcf86cd799439011",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments", "507f1f77bcf86cd799439011"]
+            },
+            "description": "Valid ObjectId format but no payment with this ID — expected `404 Not Found`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Not found error', () => {",
+                  "  pm.expect(pm.response.json().error).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Payments — Invalid Status Filter",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments?status=UNKNOWN",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "payments"],
+              "query": [{ "key": "status", "value": "UNKNOWN" }]
+            },
+            "description": "Invalid status value in query — expected `400 Bad Request`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error lists valid statuses', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.error).to.include('Invalid status');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
